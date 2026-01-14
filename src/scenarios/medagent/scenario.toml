@@ -1,0 +1,13 @@
+[scenario]
+name = "MedAgentBench"
+description = "A benchmark for medical agents using FHIR"
+
+[agent]
+role = "green_agent"
+image = "ghcr.io/your-username/med-agent-bench-green:latest"
+
+[deployment]
+resources = { cpu = 1, memory = "2048Mi" }
+
+[environment]
+FHIR_BASE_URL = "http://green-agent:8080/fhir"

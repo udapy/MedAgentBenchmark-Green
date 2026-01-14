@@ -1,0 +1,19 @@
+# Agent Configuration
+
+agent:
+  name: "MedAgentBench Assessor"
+  description: "Realistic FHIR Environment with 300 Clinical Tasks. 700k+ Patient Records."
+  version: "1.0.0"
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+fhir:
+  # Base URL for the FHIR server. Can be overridden by env var FHIR_BASE_URL
+  base_url: "http://fhir-server:8080/fhir"
+  skip_check: false # Set to true to skip startup connectivity check
+
+test_overrides:
+  # Set specific task ID to force that task to be selected
+  force_task_id: null

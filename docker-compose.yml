@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # Legacy FHIR Server (Java/Tomcat)
+  fhir-server:
+    image: ${FHIR_SERVER_IMAGE:-jyxsu6/medagentbench:latest}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metadata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - medagent-network
+
+  # Green Agent (Python)
+  green-agent:
+    image: ${DOCKER_IMAGE_NAME:-medagentbench-green:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Override command to ensure card-url is set correctly for localhost access
+    command: ["--host", "0.0.0.0", "--port", "8000", "--card-url", "http://localhost:9009"]
+    ports:
+      - "9009:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/.well-known/agent-card.json"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    env_file:
+      - .env
+    environment:
+      - FHIR_BASE_URL=http://fhir-server:8080/fhir
+    volumes:
+      - ./config:/app/config
+    depends_on:
+      - fhir-server
+    networks:
+      - medagent-network
+
+networks:
+  medagent-network:
+    driver: bridge

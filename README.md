@@ -1,87 +1,116 @@
-# A2A Agent Template
+# MedAgentBenchmark Green Agent (Assessor)
 
-A minimal template for building [A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/) green agents compatible with the [AgentBeats](https://agentbeats.dev) platform.
+The **MedAgentBenchmark Green Agent** is the reference implementation of the **Assessor Agent** in the Agentified Agent Assessment (AAA) architecture. It is responsible for orchestrating medical tasks, communicating with the **Purple Agent** (the model being evaluated), and validating the results against a reference solution.
+
+## Architecture
+
+This agent operates within the AAA framework:
+
+1.  **Platform**: Sends an evaluation request to the Green Agent.
+2.  **Green Agent (Assessor)**:
+    - Receives the request.
+    - Retrieves necessary medical data from its internal **FHIR Server**.
+    - Formulates instructions and communicates with the **Purple Agent** (Model) via the [A2A (Agent-to-Agent) Protocol](https://a2a-protocol.org/).
+    - Evaluates the Purple Agent's response against a ground truth (Reference Solution).
+    - Return the evaluation result to the Platform.
+3.  **Purple Agent (Model)**: The agent system under test.
+
+### Microservices
+
+The Green Agent runs as a composed service:
+
+- **Green Agent (Python A2A Service)**: Listens on port `9009`. Handles agent logic and communication.
+- **FHIR Server (HAPI FHIR)**: Listen on port `8080` (Internal/External). Provides a standardized medical data repository.
+
+## Prerequisites
+
+- **Docker**: For building and running the containerized agent.
+- **Python 3.11+**: For local development.
+- **Make**: For running automation scripts.
+- **uv**: For fast Python dependency management (`pip install uv`).
+
+## Getting Started
+
+### 1. Installation
+
+Install project dependencies using `uv`:
+
+```bash
+make install
+```
+
+### 2. Local Development
+
+Run the agent locally (requires Python environment setup):
+
+```bash
+make dev
+```
+
+The agent will start on `http://localhost:9009`.
+
+### 3. Docker Build & Run
+
+Build the production Docker image:
+
+```bash
+make build
+```
+
+Run the container (maps port 9009, enables host gateway for E2E testing):
+
+```bash
+make run-container
+```
+
+## Verification
+
+### Unit Tests
+
+Run the test suite using `pytest`:
+
+```bash
+make test
+```
+
+_Note: Some tests require a running agent instance._
+
+### End-to-End (E2E) Verification
+
+Validate the full agent flow using the E2E verification script. This script mocks a **Purple Agent** and a **Platform**, initiating a task and checking the Green Agent's response.
+
+1.  Start the Green Agent (e.g., in a separate terminal via `make run-container` or `make dev`).
+2.  Run the verification:
+
+```bash
+make verify
+```
 
 ## Project Structure
 
 ```
-src/
-├─ server.py      # Server setup and agent card configuration
-├─ executor.py    # A2A request handling
-├─ agent.py       # Your agent implementation goes here
-└─ messenger.py   # A2A messaging utilities
-tests/
-└─ test_agent.py  # Agent tests
-Dockerfile        # Docker configuration
-pyproject.toml    # Python dependencies
-.github/
-└─ workflows/
-   └─ test-and-publish.yml # CI workflow
+.
+├── Makefile                # Production-grade build and run commands
+├── Dockerfile              # Multi-stage Docker build for Green Agent
+├── pyproject.toml          # Python dependencies and configuration
+├── start.sh                # Container entrypoint script
+├── scripts/
+│   └── verify_e2e.py       # E2E verification script (Mock Purple Agent + Platform)
+├── src/
+│   ├── agent.py            # Main Agent implementation (A2A logic)
+│   ├── server.py           # A2A Server setup
+│   ├── executor.py         # Task execution logic
+│   └── med_data/           # Medical data utilities and reference solutions
+└── tests/                  # Unit and conformance tests
 ```
 
-## Getting Started
+## API Documentation
 
-1. **Create your repository** - Click "Use this template" to create your own repository from this template
+The agent exposes the following [A2A Protocol](https://a2a-protocol.org/) endpoints:
 
-2. **Implement your agent** - Add your agent logic to [`src/agent.py`](src/agent.py)
+- `GET /.well-known/agent-card.json`: Returns the Agent Card metadata (capabilities, description).
+- `POST /`: Accepts JSON-RPC 2.0 messages for agent communication.
 
-3. **Configure your agent card** - Fill in your agent's metadata (name, skills, description) in [`src/server.py`](src/server.py)
+## License
 
-4. **Write your tests** - Add custom tests for your agent in [`tests/test_agent.py`](tests/test_agent.py)
-
-For a concrete example of implementing a green agent using this template, see this [draft PR](https://github.com/RDI-Foundation/green-agent-template/pull/3).
-
-## Running Locally
-
-```bash
-# Install dependencies
-uv sync
-
-# Run the server
-uv run src/server.py
-```
-
-## Running with Docker
-
-```bash
-# Build the image
-docker build -t my-agent .
-
-# Run the container
-docker run -p 9009:9009 my-agent
-```
-
-## Testing
-
-Run A2A conformance tests against your agent.
-
-```bash
-# Install test dependencies
-uv sync --extra test
-
-# Start your agent (uv or docker; see above)
-
-# Run tests against your running agent URL
-uv run pytest --agent-url http://localhost:9009
-```
-
-## Publishing
-
-The repository includes a GitHub Actions workflow that automatically builds, tests, and publishes a Docker image of your agent to GitHub Container Registry.
-
-If your agent needs API keys or other secrets, add them in Settings → Secrets and variables → Actions → Repository secrets. They'll be available as environment variables during CI tests.
-
-- **Push to `main`** → publishes `latest` tag:
-```
-ghcr.io/<your-username>/<your-repo-name>:latest
-```
-
-- **Create a git tag** (e.g. `git tag v1.0.0 && git push origin v1.0.0`) → publishes version tags:
-```
-ghcr.io/<your-username>/<your-repo-name>:1.0.0
-ghcr.io/<your-username>/<your-repo-name>:1
-```
-
-Once the workflow completes, find your Docker image in the Packages section (right sidebar of your repository). Configure the package visibility in package settings.
-
-> **Note:** Organization repositories may need package write permissions enabled manually (Settings → Actions → General). Version tags must follow [semantic versioning](https://semver.org/) (e.g., `v1.0.0`).
+[MIT](LICENSE)

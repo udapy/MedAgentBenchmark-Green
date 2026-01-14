@@ -1,16 +1,25 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm
+FROM python:3.11-slim
 
-RUN adduser agent
-USER agent
-WORKDIR /home/agent
+WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
-COPY src src
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-RUN \
-    --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
-    uv sync --locked
+# Install dependencies
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-cache
 
-ENTRYPOINT ["uv", "run", "src/server.py"]
-CMD ["--host", "0.0.0.0"]
-EXPOSE 9009
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Copy source code
+COPY src/ src/
+COPY scripts/ scripts/
+
+# Expose default port
+EXPOSE 8000
+
+# Set entrypoint to our new server
+# We use the PATH environment variable to target the venv python directly
+ENTRYPOINT ["python", "-m", "src.a2a_adapter.server"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]
