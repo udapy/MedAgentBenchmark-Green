@@ -155,145 +155,106 @@ class Agent:
         if not self.tasks:
             await updater.reject(new_agent_text_message("No tasks available in MedAgentBench."))
             return
-            
-        # Allow forcing a specific task via config for testing/verification
+
+        # Filter tasks based on config 'task_ids' if provided
+        # This supports evaluating a specific subset of tasks
+        allowed_ids = request.config.get("task_ids")
+        candidate_tasks = self.tasks
+
+        if allowed_ids and isinstance(allowed_ids, list):
+             candidate_tasks = [t for t in self.tasks if t.get("id") in allowed_ids]
+             if not candidate_tasks:
+                  await updater.reject(new_agent_text_message(f"No matching tasks found for provided task_ids: {allowed_ids[:5]}..."))
+                  return
+             tasks_to_run = candidate_tasks
+        else:
+             tasks_to_run = [random.choice(candidate_tasks)]
+
+        # Allow forcing a specific task via config for testing/verification (OVERRIDE)
         force_id = request.config.get("force_task_id")
         if force_id:
             # Find task by ID
             matches = [t for t in self.tasks if t.get("id") == force_id]
             if matches:
-                 task = matches[0]
+                 tasks_to_run = [matches[0]]
             else:
                  await updater.reject(new_agent_text_message(f"Task ID {force_id} not found."))
                  return
-        else:
-            task = random.choice(self.tasks)
+
+        for i, task in enumerate(tasks_to_run):
+            task_id = task.get("id", "unknown")
+            current_count = i + 1
+            total_count = len(tasks_to_run)
             
-        task_id = task.get("id", "unknown")
-        
-        # Construct Payload
-        # Note: Green Agent hostname should be used for FHIR URL if external access is needed.
-        # Within the cluster/network, 'medagent-green' or similar might be the name.
-        # But the prompt says: "fhir_base_url": "http://green-agent:8080/fhir"
-        # Since we don't know the exact hostname of THIS container from the outside (depends on docker-compose),
-        # but the prompt explicitly said to use `green-agent`, I'll use that.
-        # Or I can try to detect it, but `green-agent` is a safe convention if defined in the prompt.
-        
-        payload = {
-            "instruction": task["instruction"],
-            "system_context": task["context"],
-            "fhir_base_url": "http://green-agent:8080/fhir", # As per prompt, or could use self.fhir_base_url if accessible
-            "interaction_limit": 8
-        }
+            # Construct Payload
+            # Note: Green Agent hostname should be used for FHIR URL if external access is needed.
+            payload = {
+                "instruction": task["instruction"],
+                "system_context": task["context"],
+                "fhir_base_url": "http://green-agent:8080/fhir", 
+                "interaction_limit": request.config.get("max_iterations", 8)
+            }
 
-        await updater.update_status(TaskState.working, new_agent_text_message(f"Sending Task ID: {task_id}"))
+            await updater.update_status(TaskState.working, new_agent_text_message(f"[{current_count}/{total_count}] Sending Task ID: {task_id}"))
 
-        # Send to Purple Agent
-        try:
-            # We expect a text response "FINISH([...])" or just the answer? 
-            # The prompt says: Purple Agent sends `finish([answer_string])`.
-            # But talk_to_agent returns a Message object.
-            agent_response_text = await self.messenger.talk_to_agent(
-                json.dumps(payload), 
-                target_url
-            )
-            # agent_response_text = get_message_text(agent_response_msg) # Removed: talk_to_agent returns str
-        except Exception as e:
-            await updater.update_status(TaskState.failed, new_agent_text_message(f"Communication failed: {e}"))
-            return
-
-        # Grade Result
-        await updater.update_status(TaskState.working, new_agent_text_message("Grading response..."))
-        
-        # Parse the response to get the inner answer.
-        # The prompt says: Purple Agent sends `finish([answer_string])`
-        # We need to extract the answer list.
-        # Logic adapted from legacy __init__.py `r.startswith('FINISH(')`
-        
-        clean_resp = agent_response_text.strip()
-        # Handle markdown code blocks
-        if "```" in clean_resp:
-             clean_resp = clean_resp.replace("```json", "").replace("```", "").strip()
-
-        # Simple parsing logic
-        result_list = []
-        if clean_resp.startswith("FINISH(") and clean_resp.endswith(")"):
-            inner = clean_resp[7:-1]
+            # Send to Purple Agent
             try:
-                # Use json.loads to safely parse the list if it's valid JSON format inside
-                # But it might be python list string. 
-                # Legacy code used `r[len('FINISH('):-1]` which returns a string representation of list?
-                # Actually legacy sends `result=r` to eval.
-                # Let's check how eval expects it.
-                # eval.py calls `grader_func(case_data, results, ...)`
-                # results is TaskOutput, containing result.
-                # If we mimic the object structure or just pass what grader_func expects.
-                # Wait, eval.py imports refsol and calls `grader_func = getattr(refsol, task_id)`.
-                # We need to see what `grader_func` signature is.
-                # `eval(self.data[index], results[i], self.fhir_api_base)`
-                # results[i] is a TaskOutput object.
-                pass
-            except:
-                pass
-        
-        # Since I don't have the real refsol, I'm using a placeholder.
-        # I'll create a Mock object for results to pass to eval
-        
-        class MockResult:
-            def __init__(self, content):
-                self.result = content # This is the "FINISH(...)" string or the list?
-                # Legacy: `result` in TaskOutput was `r[len('FINISH('):-1]` i.e. content of finish.
-                # So if input is FINISH(["foo"]), result is ["foo"] (string representation) or list object?
-                # In legacy __init__.py: `result=r[len('FINISH('):-1]` -> "['answer']" string?
-                # Then `eval.py` passes this TaskOutput to refsol.
-                pass
-        
-        # Extracting the actual answer content
-        if clean_resp.startswith("FINISH("):
-             submission = clean_resp[7:-1] # String inside parens
-        else:
-             submission = clean_resp # Fallback
+                agent_response_text = await self.messenger.talk_to_agent(
+                    json.dumps(payload), 
+                    target_url
+                )
+            except Exception as e:
+                await updater.update_status(TaskState.failed, new_agent_text_message(f"Communication failed for task {task_id}: {e}"))
+                return
 
-        # Create a mock result object that matches what legacy evaluator expects (attribute access)
-        class TaskOutputStub:
-            def __init__(self, res):
-                self.result = res
-        
-        mock_task_output = TaskOutputStub(submission)
-        
-        score = 0.0
-        feedback = "Incorrect"
-        
-        try:
-            # Use the local evaluator which imports refsol (our stub)
-            # We need to ensure we pass the right arguments.
-            # case_data = task
-            # results = mock_task_output
-            # fhir_api_base = self.fhir_base_url
+            # Grade Result
+            await updater.update_status(TaskState.working, new_agent_text_message(f"[{current_count}/{total_count}] Grading response for {task_id}..."))
             
-            # Note: our local eval.py imports refsol. 
-            # Ensure src.med_data.eval works.
-            is_correct = evaluator.eval(task, mock_task_output, self.fhir_base_url)
-            
-            if is_correct:
-                score = 1.0
-                feedback = "Correct"
+            clean_resp = agent_response_text.strip()
+            # Handle markdown code blocks
+            if "```" in clean_resp:
+                 clean_resp = clean_resp.replace("```json", "").replace("```", "").strip()
+
+            # Extracting the actual answer content
+            if clean_resp.startswith("FINISH("):
+                 submission = clean_resp[7:-1] # String inside parens
             else:
-                score = 0.0
-                feedback = "Incorrect"
-                
-        except Exception as e:
-            feedback = f"Grading error: {e}"
-            score = 0.0
+                 submission = clean_resp # Fallback
 
-        await updater.add_artifact(
-            parts=[
-                Part(root=TextPart(text=f"Task: {task['instruction']}\nResult: {clean_resp}\nGrade: {feedback}")),
-                Part(root=DataPart(data={
-                    "score": score,
-                    "feedback": feedback,
-                    "task_id": task_id
-                }))
-            ],
-            name="MedAgentBench Assessment",
-        )
+            # Create a mock result object that matches what legacy evaluator expects (attribute access)
+            class TaskOutputStub:
+                def __init__(self, res):
+                    self.result = res
+                    self.history = []
+            
+            mock_task_output = TaskOutputStub(submission)
+            
+            score = 0.0
+            feedback = "Incorrect"
+            
+            try:
+                # Use the local evaluator which imports refsol (our stub)
+                is_correct = evaluator.eval(task, mock_task_output, self.fhir_base_url)
+                
+                if is_correct:
+                    score = 1.0
+                    feedback = "Correct"
+                else:
+                    score = 0.0
+                    feedback = "Incorrect"
+                    
+            except Exception as e:
+                feedback = f"Grading error: {e}"
+                score = 0.0
+
+            await updater.add_artifact(
+                parts=[
+                    Part(root=TextPart(text=f"Task: {task['instruction']}\nResult: {clean_resp}\nGrade: {feedback}")),
+                    Part(root=DataPart(data={
+                        "score": score,
+                        "feedback": feedback,
+                        "task_id": task_id
+                    }))
+                ],
+                name=f"Assessment: {task_id}",
+            )
