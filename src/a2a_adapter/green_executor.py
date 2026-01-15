@@ -14,6 +14,19 @@ from src.green_agent.core import GreenHealthcareAgent
 
 logger = logging.getLogger(__name__)
 
+TASK_NAME_MAPPING = {
+    "task1": "Patient Search",
+    "task2": "Age Calculation",
+    "task3": "Vital Sign Recording",
+    "task4": "Lab Result Retrieval",
+    "task5": "Medication Ordering",
+    "task6": "Data Summarization",
+    "task7": "Most Recent Value",
+    "task8": "Procedure Ordering",
+    "task9": "Medication + Schedule",
+    "task10": "Lab Gap Closure"
+}
+
 class GreenExecutor:
     def __init__(self):
         self.agent = GreenHealthcareAgent()
@@ -77,6 +90,9 @@ class GreenExecutor:
         logger.info(f"Starting execution of {total_tasks} tasks.")
 
         # 3. External Orchestration (Loop)
+        passed_count = 0
+        failed_tasks = []
+
         for i, task in enumerate(tasks_to_run):
             task_id = task.get("id", "unknown")
             await updater.update_status(TaskState.working, new_agent_text_message(f"[{i+1}/{total_tasks}] Selected Task: {task_id}"))
@@ -92,10 +108,17 @@ class GreenExecutor:
 
             # 4. Final Artifact per task
             # Ensure strict adherence to agentbeats-tutorial artifact schema
+            
+            # Derive task type (e.g. task1_1 -> task1)
+            task_type = task_id.split('_')[0] if "_" in task_id else "unknown"
+            task_name = TASK_NAME_MAPPING.get(task_type, f"Type: {task_type}")
+
             artifact_content = {
                 "score": result.score,
                 "feedback": result.feedback,
                 "task_id": result.task_id,
+                "task_type": task_type,
+                "task_name": task_name,
                 "metadata": result.metadata,
                 "artifact_type": "evaluation_result" 
             }
@@ -104,13 +127,53 @@ class GreenExecutor:
             if "timestamp" not in artifact_content:
                 artifact_content["timestamp"] = datetime.now(timezone.utc).isoformat()
     
-            logger.info(f"Assessment complete for {task_id}. Score: {result.score}")
+            logger.info(f"Assessment complete for {task_id} ({task_name}). Score: {result.score}")
             
+            # Update counters
+            if result.score == 1.0:
+                passed_count += 1
+            else:
+                failed_tasks.append({
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "task_name": task_name,
+                    "feedback": result.feedback,
+                    "score": result.score
+                })
+
             await updater.add_artifact(
                 parts=[
-                    Part(root=TextPart(text=f"Task: {task['instruction']}\nGrade: {result.feedback}\nScore: {result.score}")),
+                    Part(root=TextPart(text=f"Task: {task['instruction']}\nName: {task_name}\nGrade: {result.feedback}\nScore: {result.score}")),
                     Part(root=DataPart(data=artifact_content))
                 ],
                 name=f"evaluation_result_{task_id}", # Unique name per task
             )
+        
+        # 5. Final Summary Artifact
+        summary_text = f"Total Score: {passed_count}/{total_tasks}\n"
+        if failed_tasks:
+            summary_text += f"\nFailed Tasks ({len(failed_tasks)}):\n"
+            for ft in failed_tasks:
+                summary_text += f"- {ft['task_id']} ({ft['task_name']}): {ft['feedback']}\n"
+        else:
+            summary_text += "\nAll tasks passed!"
+
+        summary_content = {
+            "total_tasks": total_tasks,
+            "passed_tasks": passed_count,
+            "failed_tasks": failed_tasks, # Now contains dicts with type info
+            "score_summary": f"{passed_count}/{total_tasks}",
+            "artifact_type": "evaluation_summary",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+        logger.info(f"Assessment Group Complete. {summary_text}")
+
+        await updater.add_artifact(
+            parts=[
+                Part(root=TextPart(text=summary_text)),
+                Part(root=DataPart(data=summary_content))
+            ],
+            name="evaluation_summary",
+        )
 
