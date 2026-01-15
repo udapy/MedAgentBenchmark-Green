@@ -35,7 +35,17 @@ logger = logging.getLogger(__name__)
 class GreenHealthcareAgent:
     def __init__(self):
         self.messenger = Messenger()
-        self.fhir_base_url = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
+        
+        # Prefer FHIR_BASE_URL, fallback to FHIR_SERVER_URL + /fhir, then localhost
+        base = os.getenv("FHIR_BASE_URL")
+        if not base:
+            server = os.getenv("FHIR_SERVER_URL")
+            if server:
+                 base = f"{server.rstrip('/')}/fhir"
+            else:
+                 base = "http://localhost:8080/fhir"
+        
+        self.fhir_base_url = base
         self.tasks = []
         self._data_loaded = False
 
@@ -50,9 +60,11 @@ class GreenHealthcareAgent:
             logger.info("Skipping FHIR server check.")
             return
 
-        logger.info("Checking FHIR server status...")
-        # Simple non-blocking check with fewer retries for efficiency
-        for i in range(5): 
+        logger.info(f"Checking FHIR server status at {self.fhir_base_url}...")
+        # Increase to 30 attempts x 2s = 60s, or loop until timeout env var
+        max_retries = int(os.getenv("FHIR_CHECK_RETRIES", "30"))
+        
+        for i in range(max_retries): 
             try:
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(None, lambda: requests.get(f"{self.fhir_base_url}/metadata", timeout=2))
@@ -61,7 +73,7 @@ class GreenHealthcareAgent:
                     return
             except Exception:
                 pass
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
         logger.warning("FHIR Server check failed or timed out. Proceeding anyway (might fail later).")
 
     def _load_data(self):
