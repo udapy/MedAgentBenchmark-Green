@@ -99,7 +99,7 @@ class GreenHealthcareAgent:
             return matches[0] if matches else None
         return random.choice(self.tasks)
 
-    async def run_assessment(self, task: Dict[str, Any], participants: Dict[str, HttpUrl], updater: TaskUpdater) -> EvalResult:
+    async def run_assessment(self, task: Dict[str, Any], participants: Dict[str, HttpUrl], updater: TaskUpdater, interaction_limit: int = 8) -> EvalResult:
         """
         Orchestrates the specific assessment logic.
         """
@@ -117,7 +117,7 @@ class GreenHealthcareAgent:
             "instruction": task["instruction"],
             "system_context": task["context"],
             "fhir_base_url": fhir_url,
-            "interaction_limit": 8
+            "interaction_limit": interaction_limit
         }
 
         # Send to Purple Agent
