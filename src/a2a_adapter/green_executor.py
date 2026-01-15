@@ -44,51 +44,73 @@ class GreenExecutor:
         # Initialize domain agent
         await self.agent.initialize() # Ensure FHIR/Data ready
 
-        # 2. Pick a task
-        # Allow config override for deterministic testing
-        forced_task_id = request.config.get("force_task_id")
-        task = self.agent.select_task(task_id=forced_task_id)
+        # 2. Pick tasks
+        tasks_to_run = []
         
-        if not task:
-            await updater.reject(new_agent_text_message("Failed to select a valid task."))
-            return
+        # Check for list of task_ids
+        requested_ids = request.config.get("task_ids")
+        if requested_ids and isinstance(requested_ids, list):
+            for tid in requested_ids:
+                task = self.agent.select_task(task_id=tid)
+                if task:
+                    tasks_to_run.append(task)
+                else:
+                    logger.warning(f"Task ID {tid} not found, skipping.")
+            
+            if not tasks_to_run:
+                await updater.reject(new_agent_text_message(f"No valid tasks found from provided list: {requested_ids}"))
+                return
+        
+        # Fallback to single forced task or random
+        if not tasks_to_run:
+            forced_task_id = request.config.get("force_task_id")
+            task = self.agent.select_task(task_id=forced_task_id)
+            if not task:
+                await updater.reject(new_agent_text_message("Failed to select a valid task."))
+                return
+            tasks_to_run.append(task)
 
-        task_id = task.get("id", "unknown")
-        await updater.update_status(TaskState.working, new_agent_text_message(f"Selected Task: {task_id}"))
+        # Config extraction
+        interaction_limit = request.config.get("max_iterations", 8)
+        
+        total_tasks = len(tasks_to_run)
+        logger.info(f"Starting execution of {total_tasks} tasks.")
 
         # 3. External Orchestration (Loop)
-        # For this specific benchmark, it's a simple 1-turn or multi-turn exchange managed by the agent core logic
-        # We delegate the actual interaction to the agent's logic to keep this adapter clean
-        
-        # Assumption: The agent logic handles the communication loop and returns a result
-        # We pass the updater so it can stream progress
-        try:
-             result = await self.agent.run_assessment(task, participants, updater)
-        except Exception as e:
-             logger.exception("Assessment execution failed")
-             await updater.update_status(TaskState.failed, new_agent_text_message(f"Execution error: {e}"))
-             return
+        for i, task in enumerate(tasks_to_run):
+            task_id = task.get("id", "unknown")
+            await updater.update_status(TaskState.working, new_agent_text_message(f"[{i+1}/{total_tasks}] Selected Task: {task_id}"))
 
-        # 4. Final Artifact
-        # Ensure strict adherence to agentbeats-tutorial artifact schema
-        artifact_content = {
-            "score": result.score,
-            "feedback": result.feedback,
-            "task_id": result.task_id,
-            "metadata": result.metadata,
-            "artifact_type": "evaluation_result" 
-        }
-        
-        # Add timestamp if not present
-        if "timestamp" not in artifact_content:
-            artifact_content["timestamp"] = datetime.now(timezone.utc).isoformat()
+            try:
+                 result = await self.agent.run_assessment(task, participants, updater, interaction_limit=interaction_limit)
+            except Exception as e:
+                 logger.exception(f"Assessment execution failed for task {task_id}")
+                 await updater.update_status(TaskState.failed, new_agent_text_message(f"Execution error for {task_id}: {e}"))
+                 # Verify strategy: continue to next task or abort? 
+                 # Usually continue is better for batch benchmarks.
+                 continue
 
-        logger.info(f"Assessment complete. Score: {result.score}")
-        
-        await updater.add_artifact(
-            parts=[
-                Part(root=TextPart(text=f"Task: {task['instruction']}\nGrade: {result.feedback}\nScore: {result.score}")),
-                Part(root=DataPart(data=artifact_content))
-            ],
-            name="evaluation_result", # Standard name
-        )
+            # 4. Final Artifact per task
+            # Ensure strict adherence to agentbeats-tutorial artifact schema
+            artifact_content = {
+                "score": result.score,
+                "feedback": result.feedback,
+                "task_id": result.task_id,
+                "metadata": result.metadata,
+                "artifact_type": "evaluation_result" 
+            }
+            
+            # Add timestamp if not present
+            if "timestamp" not in artifact_content:
+                artifact_content["timestamp"] = datetime.now(timezone.utc).isoformat()
+    
+            logger.info(f"Assessment complete for {task_id}. Score: {result.score}")
+            
+            await updater.add_artifact(
+                parts=[
+                    Part(root=TextPart(text=f"Task: {task['instruction']}\nGrade: {result.feedback}\nScore: {result.score}")),
+                    Part(root=DataPart(data=artifact_content))
+                ],
+                name=f"evaluation_result_{task_id}", # Unique name per task
+            )
+
