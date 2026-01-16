@@ -71,4 +71,4 @@ async def test_execute_multiple_tasks():
         assert call_args[1].args[0]['id'] == 'task_b'
         
         # 3. Verify artifacts
-        assert mock_updater.add_artifact.call_count == 2
+        assert mock_updater.add_artifact.call_count == 3

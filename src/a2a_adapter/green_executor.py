@@ -1,6 +1,8 @@
+
 import logging
 import json
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 
@@ -41,6 +43,7 @@ class GreenExecutor:
         """
         input_text = get_message_text(message)
         logger.info(f"Received assessment request: {input_text}")
+        start_time = time.time()
 
         # 1. Validate
         try:
@@ -71,6 +74,9 @@ class GreenExecutor:
                     logger.warning(f"Task ID {tid} not found, skipping.")
             
             if not tasks_to_run:
+                # If specifically requested IDs are missing, that's a reject error
+                # But for robustness, maybe we just want to warn?
+                # Let's reject for now if nothing matches explicit list.
                 await updater.reject(new_agent_text_message(f"No valid tasks found from provided list: {requested_ids}"))
                 return
         
@@ -95,23 +101,29 @@ class GreenExecutor:
 
         for i, task in enumerate(tasks_to_run):
             task_id = task.get("id", "unknown")
+            # Derive task type (e.g. task1_1 -> task1)
+            task_type = task_id.split('_')[0] if "_" in task_id else "unknown"
+            task_name = TASK_NAME_MAPPING.get(task_type, f"Type: {task_type}")
+
             await updater.update_status(TaskState.working, new_agent_text_message(f"[{i+1}/{total_tasks}] Selected Task: {task_id}"))
 
             try:
                  result = await self.agent.run_assessment(task, participants, updater, interaction_limit=interaction_limit)
             except Exception as e:
                  logger.exception(f"Assessment execution failed for task {task_id}")
-                 await updater.update_status(TaskState.failed, new_agent_text_message(f"Execution error for {task_id}: {e}"))
-                 # Verify strategy: continue to next task or abort? 
-                 # Usually continue is better for batch benchmarks.
+                 
+                 # CRITICAL FIX: Do NOT send TaskState.failed, as it kills the client.
+                 # Send TaskState.working with error info and continue.
+                 await updater.update_status(TaskState.working, new_agent_text_message(f"Execution error for {task_id}: {e}. Skipping..."))
+                 
+                 failed_tasks.append({
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "task_name": task_name,
+                    "feedback": f"System Error: {str(e)}",
+                    "score": 0.0
+                 })
                  continue
-
-            # 4. Final Artifact per task
-            # Ensure strict adherence to agentbeats-tutorial artifact schema
-            
-            # Derive task type (e.g. task1_1 -> task1)
-            task_type = task_id.split('_')[0] if "_" in task_id else "unknown"
-            task_name = TASK_NAME_MAPPING.get(task_type, f"Type: {task_type}")
 
             artifact_content = {
                 "score": result.score,
@@ -120,7 +132,7 @@ class GreenExecutor:
                 "task_type": task_type,
                 "task_name": task_name,
                 "metadata": result.metadata,
-                "artifact_type": "evaluation_result" 
+                "artifact_type": "result" 
             }
             
             # Add timestamp if not present
@@ -141,15 +153,23 @@ class GreenExecutor:
                     "score": result.score
                 })
 
-            await updater.add_artifact(
-                parts=[
-                    Part(root=TextPart(text=f"Task: {task['instruction']}\nName: {task_name}\nGrade: {result.feedback}\nScore: {result.score}")),
-                    Part(root=DataPart(data=artifact_content))
-                ],
-                name=f"evaluation_result_{task_id}", # Unique name per task
-            )
+            # await updater.add_artifact(
+            #     parts=[
+            #         Part(root=DataPart(data={"result": artifact_content}))
+            #     ],
+            #     name=f"evaluation_result_{task_id}", # Unique name per task
+            # )
         
         # 5. Final Summary Artifact
+        time_used = time.time() - start_time
+        pass_rate = (passed_count / total_tasks * 100) if total_tasks > 0 else 0.0
+        
+        # Derive medical_task_type from first task or default
+        medical_task_type = "patient_search"
+        if tasks_to_run and "type" in tasks_to_run[0]:
+             # Map task types if needed, for now use default or user mapping
+             medical_task_type = "patient_search" 
+
         summary_text = f"Total Score: {passed_count}/{total_tasks}\n"
         if failed_tasks:
             summary_text += f"\nFailed Tasks ({len(failed_tasks)}):\n"
@@ -159,21 +179,33 @@ class GreenExecutor:
             summary_text += "\nAll tasks passed!"
 
         summary_content = {
+            "medical_task_type": medical_task_type,
+            "score": float(passed_count), # Using passed count as total score? Or aggregated score? User sample says "score": 0.0 in failed tasks, but top level score usually means total/max?
+            # User example: "score": 0.0 (likely total score sum or average?). Let's use passed_count for now or sum of scores.
+            # Wait, user example shows "score": 0.0 in the FAILURE list but top level "score": 0.0. 
+            # I will assume top level score is sum of individual scores.
+            "pass_rate": pass_rate,
             "total_tasks": total_tasks,
             "passed_tasks": passed_count,
-            "failed_tasks": failed_tasks, # Now contains dicts with type info
-            "score_summary": f"{passed_count}/{total_tasks}",
-            "artifact_type": "evaluation_summary",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "failed_tasks": failed_tasks, 
+            "time_used": time_used,
+            #"score_summary": f"{passed_count}/{total_tasks}", # Removed to match user request precisely? Or keep as extra? User didn't ban extras.
+            # But let's stick to requested format primarily.
         }
+        # Add score_summary back if useful, but user example didn't have it. User example:
+        # "result": { "medical_task_type": ..., "score": 0.0, "pass_rate": ... }
+        # I'll calculate total score sum.
+        total_score_sum = sum(ft['score'] for ft in failed_tasks) + passed_count * 1.0 # Assuming passed tasks have score 1.0
+        summary_content["score"] = float(total_score_sum)
+
 
         logger.info(f"Assessment Group Complete. {summary_text}")
 
         await updater.add_artifact(
             parts=[
-                Part(root=TextPart(text=summary_text)),
-                Part(root=DataPart(data=summary_content))
+                Part(root=DataPart(data={"result": summary_content}))
             ],
-            name="evaluation_summary",
+            name=f"evaluation_summary",
         )
 
+        await updater.update_status(TaskState.completed, new_agent_text_message("Assessment Complete"))

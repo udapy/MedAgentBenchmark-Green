@@ -191,7 +191,7 @@ class Agent:
             payload = {
                 "instruction": task["instruction"],
                 "system_context": task["context"],
-                "fhir_base_url": self.fhir_base_url, 
+                "fhir_base_url": "http://green-agent:8080/fhir", 
                 "interaction_limit": request.config.get("max_iterations", 8)
             }
 

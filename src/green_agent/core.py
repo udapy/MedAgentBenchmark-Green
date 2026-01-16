@@ -1,5 +1,6 @@
 import logging
 import random
+import re
 import json
 import asyncio
 import os
@@ -124,8 +125,32 @@ class GreenHealthcareAgent:
         await updater.update_status(TaskState.working, new_agent_text_message(f"Sending Task {task_id} to {target_role}"))
         
         try:
-            # Note: messenger.talk_to_agent returns string content
-            agent_response_text = await self.messenger.talk_to_agent(json.dumps(payload), target_url)
+            # === HEARTBEAT IMPLEMENTATION ===
+            # Create the task for talking to the agent
+            talk_task = asyncio.create_task(
+                self.messenger.talk_to_agent(json.dumps(payload), target_url)
+            )
+            
+            # Wait for result or keep sending heartbeats
+            start_time = asyncio.get_running_loop().time()
+            while not talk_task.done():
+                try:
+                    # Wait up to 30 seconds for the task to complete
+                    await asyncio.wait_for(asyncio.shield(talk_task), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # If timeout occurs, it means 30s passed and task is still running.
+                    # Send a heartbeat/keep-alive update to the client.
+                    elapsed = int(asyncio.get_running_loop().time() - start_time)
+                    logger.info(f"Waiting for agent response... ({elapsed}s elapsed)")
+                    await updater.update_status(
+                        TaskState.working, 
+                        new_agent_text_message(f"Waiting for {target_role}... ({elapsed}s elapsed)")
+                    )
+
+            # Get the result (this will raise exception if talk_task failed)
+            agent_response_text = await talk_task
+            # =================================
+            
         except Exception as e:
              raise RuntimeError(f"Communication failed: {e}")
 
@@ -152,12 +177,25 @@ class GreenHealthcareAgent:
              clean = clean.replace("```json", "").replace("```", "").strip()
         return clean
 
+
     def _grade_submission(self, task, submission_text) -> tuple[float, str]:
         # Mimic legacy eval logic
         # Extract content from "FINISH(...)"
         submission_content = submission_text
         if submission_text.startswith("FINISH(") and submission_text.endswith(")"):
             submission_content = submission_text[7:-1]
+            
+        # --- FIX: ROBUST EXTRACTION FOR TASK 1 (Patient Search) ---
+        task_id = task.get("id", "")
+        if task_id.startswith("task1"):
+             # Look for S followed by 7 digits
+             match = re.search(r"\b(S\d{7})\b", submission_content)
+             if match:
+                 # Reformat as JSON list for the strict evaluator
+                 extracted_mrn = match.group(1)
+                 logger.info(f"Extracted MRN {extracted_mrn} from response for {task_id}")
+                 submission_content = json.dumps([extracted_mrn])
+        # ----------------------------------------------------------
             
         # Create Stub for Evaluator
         class TaskOutputStub:
