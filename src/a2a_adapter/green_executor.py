@@ -125,6 +125,13 @@ class GreenExecutor:
                  })
                  continue
 
+            # 4. Final Artifact per task
+            # Ensure strict adherence to agentbeats-tutorial artifact schema
+            
+            # Derive task type (e.g. task1_1 -> task1)
+            task_type = task_id.split('_')[0] if "_" in task_id else "unknown"
+            task_name = TASK_NAME_MAPPING.get(task_type, f"Type: {task_type}")
+
             artifact_content = {
                 "score": result.score,
                 "feedback": result.feedback,
@@ -153,23 +160,15 @@ class GreenExecutor:
                     "score": result.score
                 })
 
-            # await updater.add_artifact(
-            #     parts=[
-            #         Part(root=DataPart(data={"result": artifact_content}))
-            #     ],
-            #     name=f"evaluation_result_{task_id}", # Unique name per task
-            # )
+            await updater.add_artifact(
+                parts=[
+                    Part(root=TextPart(text=f"Task: {task['instruction']}\nName: {task_name}\nGrade: {result.feedback}\nScore: {result.score}")),
+                    Part(root=DataPart(data=artifact_content))
+                ],
+                name=f"evaluation_result_{task_id}", # Unique name per task
+            )
         
         # 5. Final Summary Artifact
-        time_used = time.time() - start_time
-        pass_rate = (passed_count / total_tasks * 100) if total_tasks > 0 else 0.0
-        
-        # Derive medical_task_type from first task or default
-        medical_task_type = "patient_search"
-        if tasks_to_run and "type" in tasks_to_run[0]:
-             # Map task types if needed, for now use default or user mapping
-             medical_task_type = "patient_search" 
-
         summary_text = f"Total Score: {passed_count}/{total_tasks}\n"
         if failed_tasks:
             summary_text += f"\nFailed Tasks ({len(failed_tasks)}):\n"
@@ -179,47 +178,22 @@ class GreenExecutor:
             summary_text += "\nAll tasks passed!"
 
         summary_content = {
-            "medical_task_type": medical_task_type,
-            "score": float(passed_count), # Using passed count as total score? Or aggregated score? User sample says "score": 0.0 in failed tasks, but top level score usually means total/max?
-            # User example: "score": 0.0 (likely total score sum or average?). Let's use passed_count for now or sum of scores.
-            # Wait, user example shows "score": 0.0 in the FAILURE list but top level "score": 0.0. 
-            # I will assume top level score is sum of individual scores.
-            "pass_rate": pass_rate,
             "total_tasks": total_tasks,
             "passed_tasks": passed_count,
-            "failed_tasks": failed_tasks, 
-            "time_used": time_used,
-            #"score_summary": f"{passed_count}/{total_tasks}", # Removed to match user request precisely? Or keep as extra? User didn't ban extras.
-            # But let's stick to requested format primarily.
-        }
-        # Add score_summary back if useful, but user example didn't have it. User example:
-        # "result": { "medical_task_type": ..., "score": 0.0, "pass_rate": ... }
-        # I'll calculate total score sum.
-        total_score_sum = sum(ft['score'] for ft in failed_tasks) + passed_count * 1.0 # Assuming passed tasks have score 1.0
-        summary_content["score"] = float(total_score_sum)
-
-
-        # Participant Mapping
-        participants_map = {}
-        for p in participants:
-             # Try attribute access first (Pydantic), then dict access
-             role = getattr(p, "role", None) or (p.get("role") if hasattr(p, "get") else None)
-             aid = getattr(p, "agentbeats_id", None) or (p.get("agentbeats_id") if hasattr(p, "get") else None)
-             if role and aid:
-                 participants_map[role] = aid
-
-        final_artifact = {
-            "participants": participants_map,
-            "results": [summary_content]
+            "failed_tasks": failed_tasks, # Now contains dicts with type info
+            "score_summary": f"{passed_count}/{total_tasks}",
+            "artifact_type": "evaluation_summary",
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         logger.info(f"Assessment Group Complete. {summary_text}")
 
         await updater.add_artifact(
             parts=[
-                Part(root=DataPart(data=final_artifact))
+                Part(root=TextPart(text=summary_text)),
+                Part(root=DataPart(data=summary_content))
             ],
-            name=f"evaluation_summary",
+            name="evaluation_summary",
         )
 
         await updater.update_status(TaskState.completed, new_agent_text_message("Assessment Complete"))
