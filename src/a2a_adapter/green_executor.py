@@ -1,6 +1,8 @@
+
 import logging
 import json
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 
@@ -41,6 +43,7 @@ class GreenExecutor:
         """
         input_text = get_message_text(message)
         logger.info(f"Received assessment request: {input_text}")
+        start_time = time.time()
 
         # 1. Validate
         try:
@@ -71,6 +74,9 @@ class GreenExecutor:
                     logger.warning(f"Task ID {tid} not found, skipping.")
             
             if not tasks_to_run:
+                # If specifically requested IDs are missing, that's a reject error
+                # But for robustness, maybe we just want to warn?
+                # Let's reject for now if nothing matches explicit list.
                 await updater.reject(new_agent_text_message(f"No valid tasks found from provided list: {requested_ids}"))
                 return
         
@@ -95,15 +101,28 @@ class GreenExecutor:
 
         for i, task in enumerate(tasks_to_run):
             task_id = task.get("id", "unknown")
+            # Derive task type (e.g. task1_1 -> task1)
+            task_type = task_id.split('_')[0] if "_" in task_id else "unknown"
+            task_name = TASK_NAME_MAPPING.get(task_type, f"Type: {task_type}")
+
             await updater.update_status(TaskState.working, new_agent_text_message(f"[{i+1}/{total_tasks}] Selected Task: {task_id}"))
 
             try:
                  result = await self.agent.run_assessment(task, participants, updater, interaction_limit=interaction_limit)
             except Exception as e:
                  logger.exception(f"Assessment execution failed for task {task_id}")
-                 await updater.update_status(TaskState.failed, new_agent_text_message(f"Execution error for {task_id}: {e}"))
-                 # Verify strategy: continue to next task or abort? 
-                 # Usually continue is better for batch benchmarks.
+                 
+                 # CRITICAL FIX: Do NOT send TaskState.failed, as it kills the client.
+                 # Send TaskState.working with error info and continue.
+                 await updater.update_status(TaskState.working, new_agent_text_message(f"Execution error for {task_id}: {e}. Skipping..."))
+                 
+                 failed_tasks.append({
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "task_name": task_name,
+                    "feedback": f"System Error: {str(e)}",
+                    "score": 0.0
+                 })
                  continue
 
             # 4. Final Artifact per task
@@ -120,7 +139,7 @@ class GreenExecutor:
                 "task_type": task_type,
                 "task_name": task_name,
                 "metadata": result.metadata,
-                "artifact_type": "evaluation_result" 
+                "artifact_type": "result" 
             }
             
             # Add timestamp if not present
@@ -177,3 +196,4 @@ class GreenExecutor:
             name="evaluation_summary",
         )
 
+        await updater.update_status(TaskState.completed, new_agent_text_message("Assessment Complete"))
