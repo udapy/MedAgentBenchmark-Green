@@ -199,11 +199,25 @@ class GreenExecutor:
         summary_content["score"] = float(total_score_sum)
 
 
+        # Participant Mapping
+        participants_map = {}
+        for p in participants:
+             # Try attribute access first (Pydantic), then dict access
+             role = getattr(p, "role", None) or (p.get("role") if hasattr(p, "get") else None)
+             aid = getattr(p, "agentbeats_id", None) or (p.get("agentbeats_id") if hasattr(p, "get") else None)
+             if role and aid:
+                 participants_map[role] = aid
+
+        final_artifact = {
+            "participants": participants_map,
+            "results": [summary_content]
+        }
+
         logger.info(f"Assessment Group Complete. {summary_text}")
 
         await updater.add_artifact(
             parts=[
-                Part(root=DataPart(data={"result": summary_content}))
+                Part(root=DataPart(data=final_artifact))
             ],
             name=f"evaluation_summary",
         )
